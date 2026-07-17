@@ -1,9 +1,59 @@
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, time as time_cls
 
 from app.agent.llm import call_llm_json, call_llm
 from app.agent.state import AgentState
 from app.models import HCP, Interaction, Material, Sample, FollowUpTask, InteractionMaterial, InteractionSample
+
+
+# ============================================================
+# Shared resolver helpers (used by log_interaction and edit_interaction)
+# ============================================================
+def resolve_hcp(db, name: str):
+    """Fuzzy-find an HCP by name, creating one if it doesn't exist."""
+    if not name:
+        return None
+    hcp = db.query(HCP).filter(HCP.name.ilike(f"%{name}%")).first()
+    if not hcp:
+        hcp = HCP(id=str(uuid.uuid4()), name=name)
+        db.add(hcp)
+        db.flush()
+    return hcp
+
+
+def resolve_materials(db, names: list):
+    """Fuzzy-match a list of material names against the catalog. Unmatched names are skipped."""
+    resolved = []
+    for name in names or []:
+        material = db.query(Material).filter(Material.name.ilike(f"%{name}%")).first()
+        if material:
+            resolved.append(material)
+    return resolved
+
+
+def resolve_samples(db, names: list):
+    resolved = []
+    for name in names or []:
+        sample = db.query(Sample).filter(Sample.name.ilike(f"%{name}%")).first()
+        if sample:
+            resolved.append(sample)
+    return resolved
+
+
+def parse_date_safe(value: str):
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_time_safe(value: str):
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(value, fmt).time()
+        except (ValueError, TypeError):
+            continue
+    return None
 
 
 # ============================================================
@@ -32,14 +82,7 @@ def log_interaction(state: AgentState) -> AgentState:
     extracted = call_llm_json(extraction_prompt)
     state["extracted"] = extracted
 
-    # Find or create the HCP by name (fuzzy match on name)
-    hcp = None
-    if extracted.get("hcp_name"):
-        hcp = db.query(HCP).filter(HCP.name.ilike(f"%{extracted['hcp_name']}%")).first()
-        if not hcp:
-            hcp = HCP(id=str(uuid.uuid4()), name=extracted["hcp_name"])
-            db.add(hcp)
-            db.flush()
+    hcp = resolve_hcp(db, extracted.get("hcp_name"))
 
     interaction = Interaction(
         id=str(uuid.uuid4()),
@@ -59,15 +102,11 @@ def log_interaction(state: AgentState) -> AgentState:
     db.flush()
 
     # Attach materials/samples mentioned, matching by fuzzy name
-    for material_name in extracted.get("materials", []):
-        material = db.query(Material).filter(Material.name.ilike(f"%{material_name}%")).first()
-        if material:
-            db.add(InteractionMaterial(interaction_id=interaction.id, material_id=material.id))
+    for material in resolve_materials(db, extracted.get("materials", [])):
+        db.add(InteractionMaterial(interaction_id=interaction.id, material_id=material.id))
 
-    for sample_name in extracted.get("samples", []):
-        sample = db.query(Sample).filter(Sample.name.ilike(f"%{sample_name}%")).first()
-        if sample:
-            db.add(InteractionSample(interaction_id=interaction.id, sample_id=sample.id))
+    for sample in resolve_samples(db, extracted.get("samples", [])):
+        db.add(InteractionSample(interaction_id=interaction.id, sample_id=sample.id))
 
     db.commit()
     db.refresh(interaction)
@@ -76,7 +115,7 @@ def log_interaction(state: AgentState) -> AgentState:
     state["tool_result"] = {
         "interaction_id": interaction.id,
         "hcp_name": hcp.name if hcp else extracted.get("hcp_name"),
-        "sentiment": interaction.sentiment,
+        "sentiment": extracted.get("sentiment", "neutral"),  # plain string, not the ORM enum object
         "topics_discussed": interaction.topics_discussed,
     }
     return state
@@ -100,12 +139,21 @@ def edit_interaction(state: AgentState) -> AgentState:
         state["tool_result"] = {"error": f"Interaction {interaction_id} not found."}
         return state
 
+    current_materials = [im.material.name for im in interaction.materials if im.material]
+    current_samples = [isamp.sample.name for isamp in interaction.samples if isamp.sample]
+
     current_snapshot = {
+        "hcp_name": interaction.hcp.name if interaction.hcp else None,
+        "date": str(interaction.date),
+        "time": str(interaction.time),
+        "interaction_type": interaction.interaction_type,
         "topics_discussed": interaction.topics_discussed,
-        "sentiment": interaction.sentiment,
+        "sentiment": interaction.sentiment.value if hasattr(interaction.sentiment, "value") else interaction.sentiment,
         "outcomes": interaction.outcomes,
         "attendees": interaction.attendees,
         "follow_up_actions": interaction.follow_up_actions,
+        "materials": current_materials,
+        "samples": current_samples,
     }
 
     edit_prompt = [
@@ -114,8 +162,16 @@ def edit_interaction(state: AgentState) -> AgentState:
             "content": (
                 "You interpret an edit instruction against a current CRM interaction record and "
                 "output ONLY a JSON object containing just the fields that should change, using "
-                "the same keys as the current record. Do not include unchanged fields. Valid "
-                "sentiment values: positive, neutral, negative."
+                "the same keys as the current record. Do not include unchanged fields. "
+                "Valid sentiment values (exact casing): positive, neutral, negative. "
+                "Valid interaction_type values (exact casing): Meeting, Call, Email, Conference, "
+                "Sample Drop."
+                "date must be formatted YYYY-MM-DD, time as HH:MM (24-hour). "
+                "For 'materials' and 'samples', output the COMPLETE new list of names that should "
+                "be attached after the edit (not just what was added or removed) - if the rep "
+                "doesn't mention materials/samples, omit those keys entirely. "
+                "'hcp_name' should only be included if the rep is correcting who the interaction "
+                "is with."
             ),
         },
         {
@@ -124,16 +180,53 @@ def edit_interaction(state: AgentState) -> AgentState:
         },
     ]
     patch = call_llm_json(edit_prompt)
+    applied = {}
 
-    for key, value in patch.items():
-        if hasattr(interaction, key):
-            setattr(interaction, key, value)
+    if "hcp_name" in patch:
+        hcp = resolve_hcp(db, patch["hcp_name"])
+        if hcp:
+            interaction.hcp_id = hcp.id
+            applied["hcp_name"] = hcp.name
+
+    if "materials" in patch:
+        db.query(InteractionMaterial).filter(InteractionMaterial.interaction_id == interaction.id).delete()
+        for material in resolve_materials(db, patch["materials"]):
+            db.add(InteractionMaterial(interaction_id=interaction.id, material_id=material.id))
+        applied["materials"] = patch["materials"]
+
+    if "samples" in patch:
+        db.query(InteractionSample).filter(InteractionSample.interaction_id == interaction.id).delete()
+        for sample in resolve_samples(db, patch["samples"]):
+            db.add(InteractionSample(interaction_id=interaction.id, sample_id=sample.id))
+        applied["samples"] = patch["samples"]
+
+    if "date" in patch:
+        parsed = parse_date_safe(patch["date"])
+        if parsed:
+            interaction.date = parsed
+            applied["date"] = patch["date"]
+
+    if "time" in patch:
+        parsed = parse_time_safe(patch["time"])
+        if parsed:
+            interaction.time = parsed
+            applied["time"] = patch["time"]
+
+    # Remaining simple scalar/JSON fields map directly onto the model
+    direct_fields = [
+        "interaction_type", "topics_discussed", "sentiment",
+        "outcomes", "attendees", "follow_up_actions",
+    ]
+    for key in direct_fields:
+        if key in patch:
+            setattr(interaction, key, patch[key])
+            applied[key] = patch[key]
 
     interaction.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(interaction)
 
-    state["tool_result"] = {"interaction_id": interaction.id, "updated_fields": patch}
+    state["tool_result"] = {"interaction_id": interaction.id, "updated_fields": applied}
     return state
 
 
@@ -184,7 +277,20 @@ def suggest_followups(state: AgentState) -> AgentState:
 # ============================================================
 def search_materials(state: AgentState) -> AgentState:
     db = state["db"]
-    keyword = state["user_message"]
+
+    keyword_prompt = [
+        {
+            "role": "system",
+            "content": (
+                "Extract the single product/material/sample keyword the user wants to search for "
+                "from their message. Respond ONLY with JSON: {\"keyword\": \"...\"}. "
+                "E.g. 'find materials about cardio' -> {\"keyword\": \"cardio\"}"
+            ),
+        },
+        {"role": "user", "content": state["user_message"]},
+    ]
+    extracted = call_llm_json(keyword_prompt)
+    keyword = extracted.get("keyword", "").strip() or state["user_message"]
 
     materials = db.query(Material).filter(Material.name.ilike(f"%{keyword}%")).limit(5).all()
     samples = db.query(Sample).filter(Sample.name.ilike(f"%{keyword}%")).limit(5).all()

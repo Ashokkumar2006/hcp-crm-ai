@@ -16,7 +16,7 @@ export const sendChatMessage = createAsyncThunk(
 const chatSlice = createSlice({
   name: 'chat',
   initialState: {
-    messages: [], // { role: 'user' | 'assistant', content: string }
+    messages: [],
     activeInteractionId: null,
     lastFollowups: [],
     status: 'idle',

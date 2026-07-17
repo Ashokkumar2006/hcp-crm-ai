@@ -1,4 +1,4 @@
-from datetime import date, time, datetime
+import datetime
 from typing import Optional, List
 from pydantic import BaseModel
 
@@ -10,6 +10,14 @@ class HCPOut(BaseModel):
     specialty: Optional[str] = None
     hospital_or_clinic: Optional[str] = None
     contact_info: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class HCPMini(BaseModel):
+    id: str
+    name: str
 
     class Config:
         from_attributes = True
@@ -46,7 +54,7 @@ class FollowUpTaskOut(BaseModel):
     id: str
     description: str
     status: str
-    due_date: Optional[date] = None
+    due_date: Optional[datetime.date] = None
     ai_generated: bool
 
     class Config:
@@ -57,8 +65,8 @@ class FollowUpTaskOut(BaseModel):
 class InteractionCreate(BaseModel):
     hcp_id: str
     rep_id: str
-    date: date
-    time: time
+    date: datetime.date
+    time: datetime.time
     interaction_type: str = "Meeting"
     attendees: List[str] = []
     topics_discussed: Optional[str] = None
@@ -73,22 +81,24 @@ class InteractionUpdate(BaseModel):
     """All fields optional — only send what changed (used for both the
     PUT endpoint and the edit_interaction agent tool)."""
     hcp_id: Optional[str] = None
-    date: Optional[date] = None
-    time: Optional[time] = None
+    date: Optional[datetime.date] = None
+    time: Optional[datetime.time] = None
     interaction_type: Optional[str] = None
     attendees: Optional[List[str]] = None
     topics_discussed: Optional[str] = None
     sentiment: Optional[str] = None
     outcomes: Optional[str] = None
     follow_up_actions: Optional[List[str]] = None
+    material_ids: Optional[List[str]] = None
+    sample_ids: Optional[List[str]] = None
 
 
 class InteractionOut(BaseModel):
     id: str
     hcp_id: str
     rep_id: str
-    date: date
-    time: time
+    date: datetime.date
+    time: datetime.time
     interaction_type: str
     attendees: List[str]
     topics_discussed: Optional[str] = None
@@ -96,8 +106,11 @@ class InteractionOut(BaseModel):
     outcomes: Optional[str] = None
     follow_up_actions: List[str]
     source: str
-    created_at: datetime
-    updated_at: datetime
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+    hcp: Optional[HCPMini] = None
+    materials: List[MaterialOut] = []
+    samples: List[SampleOut] = []
 
     class Config:
         from_attributes = True
@@ -107,7 +120,7 @@ class InteractionOut(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     rep_id: str
-    interaction_id: Optional[str] = None  # set when editing an existing interaction
+    interaction_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):

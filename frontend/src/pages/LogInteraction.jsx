@@ -12,34 +12,33 @@ import InteractionForm from '../components/organisms/InteractionForm'
 import AIAssistantChat from '../components/organisms/AIAssistantChat'
 
 export default function LogInteraction() {
-  const { id } = useParams() // present only when editing an existing interaction
+  const { id } = useParams()
   const dispatch = useDispatch()
   const navigate = useNavigate()
   const repId = useSelector((state) => state.auth.repId)
   const draft = useSelector((state) => state.interactions.currentDraft)
   const currentInteractionId = useSelector((state) => state.interactions.currentInteractionId)
   const activeChatInteractionId = useSelector((state) => state.chat.activeInteractionId)
+  const chatMessageCount = useSelector((state) => state.chat.messages.length)
   const lastFollowups = useSelector((state) => state.chat.lastFollowups)
   const [submitting, setSubmitting] = useState(false)
   const [toast, setToast] = useState(null)
 
-  // Load existing interaction when editing via URL, or reset for a fresh log
   useEffect(() => {
     dispatch(clearChat())
     if (id) {
       dispatch(fetchInteractionById(id))
-      dispatch(setActiveInteractionId(id)) // so chat edits target this interaction, not a new one
+      dispatch(setActiveInteractionId(id))
     } else {
       dispatch(resetDraft())
     }
   }, [id, dispatch])
 
-  // When the AI chat creates/edits an interaction, sync the form to show the result
   useEffect(() => {
-    if (activeChatInteractionId && activeChatInteractionId !== currentInteractionId) {
+    if (activeChatInteractionId) {
       dispatch(fetchInteractionById(activeChatInteractionId))
     }
-  }, [activeChatInteractionId, currentInteractionId, dispatch])
+  }, [chatMessageCount, activeChatInteractionId, dispatch])
 
   useEffect(() => {
     if (!toast) return
@@ -53,22 +52,25 @@ export default function LogInteraction() {
       return
     }
     setSubmitting(true)
-    const payload = {
-      hcp_id: draft.hcp_id,
-      rep_id: repId,
-      date: draft.date,
-      time: draft.time,
-      interaction_type: draft.interaction_type,
-      attendees: draft.attendees,
-      topics_discussed: draft.topics_discussed,
-      sentiment: draft.sentiment,
-      outcomes: draft.outcomes,
-      follow_up_actions: draft.follow_up_actions.filter(Boolean),
-      material_ids: draft.material_ids,
-      sample_ids: draft.sample_ids,
-    }
 
     try {
+      const normalizedTime = draft.time && draft.time.length === 5 ? `${draft.time}:00` : draft.time
+
+      const payload = {
+        hcp_id: draft.hcp_id,
+        rep_id: repId,
+        date: draft.date || new Date().toISOString().slice(0, 10),
+        time: normalizedTime || new Date().toTimeString().slice(0, 8),
+        interaction_type: draft.interaction_type || 'Meeting',
+        attendees: draft.attendees || [],
+        topics_discussed: draft.topics_discussed || '',
+        sentiment: draft.sentiment || 'neutral',
+        outcomes: draft.outcomes || '',
+        follow_up_actions: (draft.follow_up_actions || []).filter(Boolean),
+        material_ids: draft.material_ids || [],
+        sample_ids: draft.sample_ids || [],
+      }
+
       const targetId = currentInteractionId || activeChatInteractionId
       if (targetId) {
         await dispatch(updateInteraction({ id: targetId, payload })).unwrap()
@@ -78,7 +80,9 @@ export default function LogInteraction() {
       setToast({ type: 'success', message: 'Interaction saved successfully.' })
       setTimeout(() => navigate('/'), 900)
     } catch (err) {
-      setToast({ type: 'error', message: 'Could not save. Check required fields and try again.' })
+      console.error('Save interaction failed:', err)
+      const message = `Could not save: ${JSON.stringify(err)}`
+      setToast({ type: 'error', message })
     } finally {
       setSubmitting(false)
     }

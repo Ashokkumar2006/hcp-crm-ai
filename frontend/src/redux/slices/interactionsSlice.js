@@ -19,23 +19,31 @@ export const fetchInteractionById = createAsyncThunk(
 
 export const createInteraction = createAsyncThunk(
   'interactions/create',
-  async (payload) => {
-    const response = await apiClient.post('/interactions/', payload)
-    return response.data
+  async (payload, { rejectWithValue }) => {
+    try {
+      const response = await apiClient.post('/interactions/', payload)
+      return response.data
+    } catch (err) {
+      return rejectWithValue(err.response?.data || { detail: err.message })
+    }
   }
 )
 
 export const updateInteraction = createAsyncThunk(
   'interactions/update',
-  async ({ id, payload }) => {
-    const response = await apiClient.put(`/interactions/${id}`, payload)
-    return response.data
+  async ({ id, payload }, { rejectWithValue }) => {
+    try {
+      const response = await apiClient.put(`/interactions/${id}`, payload)
+      return response.data
+    } catch (err) {
+      return rejectWithValue(err.response?.data || { detail: err.message })
+    }
   }
 )
 
 const emptyDraft = {
   hcp_id: null,
-  hcp: null, // full HCP object, for display only
+  hcp: null,
   date: new Date().toISOString().slice(0, 10),
   time: new Date().toTimeString().slice(0, 5),
   interaction_type: 'Meeting',
@@ -44,8 +52,8 @@ const emptyDraft = {
   sentiment: 'neutral',
   outcomes: '',
   follow_up_actions: [],
-  materials: [], // full objects, for display
-  samples: [], // full objects, for display
+  materials: [],
+  samples: [],
   material_ids: [],
   sample_ids: [],
 }
@@ -55,7 +63,7 @@ const interactionsSlice = createSlice({
   initialState: {
     items: [],
     currentDraft: { ...emptyDraft },
-    currentInteractionId: null, // set when editing an existing record
+    currentInteractionId: null,
     status: 'idle',
     error: null,
   },
@@ -74,6 +82,7 @@ const interactionsSlice = createSlice({
       state.currentDraft = {
         ...state.currentDraft,
         hcp_id: interaction.hcp_id,
+        hcp: interaction.hcp || null,
         date: interaction.date,
         time: interaction.time?.slice(0, 5) || interaction.time,
         interaction_type: interaction.interaction_type,
@@ -82,6 +91,10 @@ const interactionsSlice = createSlice({
         sentiment: interaction.sentiment,
         outcomes: interaction.outcomes || '',
         follow_up_actions: (interaction.follow_up_actions || []).filter(Boolean),
+        materials: interaction.materials || [],
+        samples: interaction.samples || [],
+        material_ids: (interaction.materials || []).map((m) => m.id),
+        sample_ids: (interaction.samples || []).map((s) => s.id),
       }
     },
   },

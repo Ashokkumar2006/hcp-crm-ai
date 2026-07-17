@@ -62,7 +62,7 @@ export default function InteractionForm({ onSubmit, submitting, followups }) {
               value={draft.interaction_type}
               onChange={(e) => setField('interaction_type', e.target.value)}
             >
-              {INTERACTION_TYPES.map((t) => (
+              {[...new Set([...INTERACTION_TYPES, draft.interaction_type].filter(Boolean))].map((t) => (
                 <option key={t} value={t}>{t}</option>
               ))}
             </select>
